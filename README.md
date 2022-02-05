@@ -1,4 +1,4 @@
-# `emwin`
+# `emwin-tg`
 
 A Rust client for the [NWS Emergency Managers Weather Information Network](https://www.weather.gov/emwin/)
 telecommunications gateway.
