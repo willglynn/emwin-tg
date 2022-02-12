@@ -1,8 +1,12 @@
-use crate::stream::TaskState;
-use crate::Fetchable;
+use crate::{Error, FetchStream, Fetchable};
+use bytes::Bytes;
+use futures::Stream;
+use pin_project_lite::pin_project;
+use std::pin::Pin;
+use std::task::{Context, Poll};
 use std::time::Duration;
-use tokio::task::JoinHandle;
 
+pin_project! {
 /// The feed of image products from EMWIN TG.
 ///
 /// See the [image product
@@ -12,17 +16,30 @@ use tokio::task::JoinHandle;
 /// `TextSource` retrieves archives from [the operational telecommunications gateway
 /// path](https://tgftp.nws.noaa.gov/SL.us008001/CU.EMWIN/DF.xt/DC.gsatR/OPS/), providing on average
 /// ~90 seconds of latency, and yielding products up to 3-4 hours old.
-pub struct ImageSource;
+pub struct ImageSource {
+    #[pin]
+    image15min: FetchStream<Image15Min>,
+    #[pin]
+    image3hour: FetchStream<Image3Hour>,
+}
+}
 
-impl super::Source for ImageSource {}
-impl super::SealedSource for ImageSource {
-    fn spawn_tasks(task_state: TaskState) -> Vec<JoinHandle<()>> {
-        vec![
-            tokio::task::spawn(task_state.clone().run::<Image15Min>(None)),
-            tokio::task::spawn(task_state.clone().run::<Image3Hour>(None)),
-        ]
+impl Stream for ImageSource {
+    type Item = Result<Bytes, Error>;
+
+    fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
+        let this = self.project();
+        if let Poll::Ready(value) = this.image15min.poll_next(cx) {
+            return Poll::Ready(value);
+        }
+        if let Poll::Ready(value) = this.image3hour.poll_next(cx) {
+            return Poll::Ready(value);
+        }
+        return Poll::Pending;
     }
 }
+
+impl super::Source for ImageSource {}
 
 struct Image3Hour;
 impl Fetchable for Image3Hour {

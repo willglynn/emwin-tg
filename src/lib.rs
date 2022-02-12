@@ -44,6 +44,7 @@ mod fetch;
 mod product;
 mod state;
 mod stream;
+mod time;
 
 pub use error::Error;
 pub use product::Product;

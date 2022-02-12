@@ -1,10 +1,11 @@
-use crate::{Error, FetchState, Fetchable, Product, StreamState};
-use std::marker::PhantomData;
+use crate::{Error, Product, StreamState};
+use bytes::Bytes;
+use pin_project_lite::pin_project;
+use std::collections::VecDeque;
 use std::pin::Pin;
-use std::sync::{Arc, Mutex};
 use std::task::{Context, Poll};
-use tokio::sync::mpsc;
 
+pin_project! {
 /// A stream of products from the EMWIN TG text feed.
 ///
 /// `Stream` implements `futures::stream::Stream`, producing `Result<Product, Error>` when
@@ -45,24 +46,32 @@ use tokio::sync::mpsc;
 /// ```
 #[derive(Debug)]
 pub struct Stream<S: Source> {
-    tasks: Vec<tokio::task::JoinHandle<()>>,
-    rx: mpsc::Receiver<Result<Product, Error>>,
-    pd: PhantomData<S>,
+    #[pin]
+    source: S,
+    state: StreamState,
+    output_buffer: VecDeque<Result<Product, Error>>,
+}
 }
 
-impl<S: Source> Stream<S> {
+impl<S: Source + From<reqwest::Client>> Default for Stream<S> {
+    fn default() -> Self {
+        Self::from_client(crate::default_client())
+    }
+}
+
+impl<S: Source + From<reqwest::Client>> Stream<S> {
     /// Start a stream using a default HTTP client.
     ///
     /// # Example
     ///
     /// ```
     /// # tokio_test::block_on(async {
-    /// let stream = <emwin_tg::Stream<emwin_tg::TextSource>>::new();
+    /// let stream = <emwin_tg::Stream<emwin_tg::TextSource>>::default();
     /// # std::mem::drop(stream);
     /// # })
     /// ```
     pub fn new() -> Self {
-        Self::new_with_client(crate::default_client())
+        Self::default()
     }
 
     /// Start a stream using a particular HTTP client.
@@ -79,28 +88,15 @@ impl<S: Source> Stream<S> {
     ///        .build()
     ///        .unwrap();
     ///
-    /// let stream = <emwin_tg::Stream<emwin_tg::TextSource>>::new_with_client(client);
+    /// let stream = <emwin_tg::Stream<emwin_tg::TextSource>>::from_client(client);
     /// # std::mem::drop(stream);
     /// # })
     /// ```
-    pub fn new_with_client(client: reqwest::Client) -> Self {
-        let state = Arc::new(Mutex::new(StreamState::new()));
-
-        let (tx, rx) = mpsc::channel(50);
-
-        let tasks = S::spawn_tasks(TaskState { client, state, tx });
+    pub fn from_client(client: reqwest::Client) -> Self {
         Self {
-            tasks,
-            rx,
-            pd: PhantomData,
-        }
-    }
-}
-
-impl<S: Source> Drop for Stream<S> {
-    fn drop(&mut self) {
-        for task in self.tasks.iter_mut() {
-            task.abort();
+            source: S::from(client),
+            state: StreamState::new(),
+            output_buffer: VecDeque::with_capacity(50),
         }
     }
 }
@@ -108,21 +104,29 @@ impl<S: Source> Drop for Stream<S> {
 impl<S: Source> futures::Stream for Stream<S> {
     type Item = Result<Product, Error>;
 
-    fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
-        Pin::new(&mut self.rx).poll_recv(cx)
+    fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
+        let mut this = self.project();
+
+        loop {
+            if let Some(value) = this.output_buffer.pop_front() {
+                break Poll::Ready(Some(value));
+            }
+
+            match this.source.as_mut().poll_next(cx) {
+                Poll::Ready(Some(Ok(bytes))) => match this.state.new_products_in(bytes) {
+                    Ok(vec) => this.output_buffer.extend(vec),
+                    Err(e) => break Poll::Ready(Some(Err(e))),
+                },
+                Poll::Ready(Some(Err(e))) => break Poll::Ready(Some(Err(e))),
+                Poll::Ready(None) => break Poll::Ready(None),
+                Poll::Pending => break Poll::Pending,
+            }
+        }
     }
 }
 
 /// A source of EMWIN TG data.
-pub trait Source: SealedSource {}
-
-// pub trait in private module to keep this trait sealed
-mod source {
-    pub trait SealedSource: Unpin {
-        fn spawn_tasks(task_state: super::TaskState) -> Vec<tokio::task::JoinHandle<()>>;
-    }
-}
-use source::SealedSource;
+pub trait Source: futures::stream::Stream<Item = Result<Bytes, crate::Error>> {}
 
 mod text;
 pub use text::TextSource;
@@ -133,108 +137,5 @@ pub type TextStream = Stream<TextSource>;
 mod image;
 pub use image::ImageSource;
 
-/// A `Stream` of image products.
+// A `Stream` of image products.
 pub type ImageStream = Stream<ImageSource>;
-
-#[derive(Debug, Clone)]
-pub struct TaskState {
-    client: reqwest::Client,
-    state: Arc<Mutex<StreamState>>,
-    tx: mpsc::Sender<Result<Product, Error>>,
-}
-
-impl TaskState {
-    async fn run<F: Fetchable>(mut self, mut cycles: Option<usize>) {
-        let mut resource = <FetchState<F>>::new();
-
-        // Start ticking
-        let mut ticker = tokio::time::interval(F::REFETCH_INTERVAL);
-        ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
-
-        loop {
-            cycles = match cycles.take() {
-                Some(n) if n == 0 => return,
-                Some(n) => Some(n - 1),
-                None => None,
-            };
-
-            ticker.tick().await;
-            if self.tx.is_closed() {
-                return;
-            }
-
-            for attempt in 1..=3 {
-                match self.fetch_once(&mut resource).await {
-                    Err(e) if attempt == 3 => {
-                        log::error!("retries exhausted on {}: {}", F::URL, e);
-                        self.tx.send(Err(e.into())).await.ok();
-                    }
-                    Err(e) => {
-                        // Retry soon™
-                        log::warn!("error retrieving {}, will retry: {}", F::URL, e);
-                        tokio::time::sleep(std::time::Duration::from_secs(4)).await;
-                        continue;
-                    }
-                    Ok(_) => break,
-                }
-            }
-        }
-    }
-
-    async fn fetch_once<F: Fetchable>(
-        &mut self,
-        resource: &mut FetchState<F>,
-    ) -> Result<(), Error> {
-        let resp = match resource.fetch(&self.client).await? {
-            Some(resp) => resp,
-            None => return Ok(()),
-        };
-        let buffer = resp.bytes().await?;
-
-        log::info!("{}: read {} bytes", F::URL, buffer.len());
-        decompress::<F>(self.state.clone(), buffer, self.tx.clone()).await;
-
-        Ok(())
-    }
-}
-
-async fn decompress<F: Fetchable>(
-    state: Arc<Mutex<StreamState>>,
-    bytes: bytes::Bytes,
-    tx: mpsc::Sender<Result<Product, Error>>,
-) {
-    let result: Result<Vec<Result<Product, Error>>, Error> =
-        tokio::task::spawn_blocking(move || {
-            let mut archive = zip::ZipArchive::new(std::io::Cursor::new(bytes))?;
-
-            let mut names: Vec<_> = archive.file_names().map(String::from).collect();
-            names.sort();
-
-            let names = state.lock().unwrap().add_filenames_in(names);
-
-            log::info!(
-                "{}: {} of {} products are new",
-                F::URL,
-                names.len(),
-                archive.len()
-            );
-
-            Ok(names
-                .into_iter()
-                .map(|name| Product::new(archive.by_name(&name)))
-                .collect())
-        })
-        .await
-        .unwrap();
-
-    match result {
-        Ok(products) => {
-            for product_result in products {
-                tx.send(product_result).await.ok();
-            }
-        }
-        Err(e) => {
-            tx.send(Err(e)).await.ok();
-        }
-    }
-}

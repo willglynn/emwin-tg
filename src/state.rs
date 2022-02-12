@@ -1,3 +1,5 @@
+use crate::{Error, Product};
+use bytes::Bytes;
 use std::collections::{btree_map::Entry, BTreeMap};
 use std::time::{Duration, Instant};
 
@@ -7,7 +9,23 @@ pub struct StreamState {
 }
 
 impl StreamState {
-    pub fn add_filenames_in(&mut self, names: Vec<String>) -> Vec<String> {
+    pub fn new_products_in(&mut self, bytes: Bytes) -> Result<Vec<Result<Product, Error>>, Error> {
+        let mut archive = zip::ZipArchive::new(std::io::Cursor::new(bytes))?;
+
+        let mut names: Vec<_> = archive.file_names().map(String::from).collect();
+        names.sort();
+
+        let names = self.add_filenames_in(names);
+
+        log::info!("{} of {} products are new", names.len(), archive.len());
+
+        Ok(names
+            .into_iter()
+            .map(|name| Product::new(archive.by_name(&name)))
+            .collect())
+    }
+
+    fn add_filenames_in(&mut self, names: Vec<String>) -> Vec<String> {
         let mut out = Vec::new();
         let now = Instant::now();
 

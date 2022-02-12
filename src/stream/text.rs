@@ -1,8 +1,12 @@
-use crate::stream::TaskState;
-use crate::Fetchable;
+use crate::{Error, FetchStream, Fetchable};
+use bytes::Bytes;
+use futures::Stream;
+use pin_project_lite::pin_project;
+use std::pin::Pin;
+use std::task::{Context, Poll};
 use std::time::Duration;
-use tokio::task::JoinHandle;
 
+pin_project! {
 /// The feed of text products from EMWIN TG.
 ///
 /// See the [text product
@@ -12,19 +16,51 @@ use tokio::task::JoinHandle;
 /// `TextSource` retrieves archives from [the operational telecommunications gateway
 /// path](https://tgftp.nws.noaa.gov/SL.us008001/CU.EMWIN/DF.xt/DC.gsatR/OPS/), providing on average
 /// ~90 seconds of latency, and yielding products up to 3-4 hours old.
-pub struct TextSource;
+pub struct TextSource {
+    #[pin]
+    text2min: FetchStream<Text2Min>,
+    #[pin]
+    text6min: FetchStream<Text6Min>,
+    #[pin]
+    text20min: FetchStream<Text20Min>,
+    #[pin]
+    text3hour: FetchStream<Text3Hour>,
+}
+}
 
-impl super::Source for TextSource {}
-impl super::SealedSource for TextSource {
-    fn spawn_tasks(task_state: TaskState) -> Vec<JoinHandle<()>> {
-        vec![
-            tokio::task::spawn(task_state.clone().run::<Text2Min>(None)),
-            tokio::task::spawn(task_state.clone().run::<Text6Min>(Some(3))),
-            tokio::task::spawn(task_state.clone().run::<Text20Min>(Some(3))),
-            tokio::task::spawn(task_state.clone().run::<Text3Hour>(None)),
-        ]
+impl Stream for TextSource {
+    type Item = Result<Bytes, Error>;
+
+    fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
+        let this = self.project();
+        if let Poll::Ready(value) = this.text2min.poll_next(cx) {
+            return Poll::Ready(value);
+        }
+        if let Poll::Ready(value) = this.text6min.poll_next(cx) {
+            return Poll::Ready(value);
+        }
+        if let Poll::Ready(value) = this.text20min.poll_next(cx) {
+            return Poll::Ready(value);
+        }
+        if let Poll::Ready(value) = this.text3hour.poll_next(cx) {
+            return Poll::Ready(value);
+        }
+        return Poll::Pending;
     }
 }
+
+impl From<reqwest::Client> for TextSource {
+    fn from(c: reqwest::Client) -> Self {
+        Self {
+            text2min: FetchStream::from(c.clone()),
+            text6min: FetchStream::from(c.clone()),
+            text20min: FetchStream::from(c.clone()),
+            text3hour: FetchStream::from(c),
+        }
+    }
+}
+
+impl super::Source for TextSource {}
 
 struct Text3Hour;
 impl Fetchable for Text3Hour {

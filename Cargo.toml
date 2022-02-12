@@ -13,10 +13,11 @@ categories = ["api-bindings", "science"]
 bytes = "1.1"
 zip = { version = "0.5", features = ["deflate"] }
 thiserror = "1.0"
-tokio = { version = "1.16", features = ["rt", "macros", "sync"] }
+tokio = { version = "1.16", features = ["rt", "macros"] }
 futures = "0.3"
 reqwest = { version = "0.11" }
 log = "0.4"
+pin-project-lite = "0.2.8"
 
 [dev-dependencies]
 env_logger = "0.9"
