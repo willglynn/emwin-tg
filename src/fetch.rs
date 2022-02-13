@@ -1,9 +1,8 @@
 use crate::time::Ticker;
 use crate::Error;
 use bytes::Bytes;
-use futures::future::BoxFuture;
+use futures::future::LocalBoxFuture;
 use pin_project_lite::pin_project;
-use std::future::Future;
 use std::marker::PhantomData;
 use std::pin::Pin;
 use std::task::{Context, Poll};
@@ -26,7 +25,7 @@ pub struct FetchStream<F: Fetchable> {
     fetch_state: FetchState,
     #[pin]
     ticker: Ticker,
-    fetches: Vec<BoxFuture<'static, Result<Option<(Bytes, FetchState)>, Error>>>,
+    fetches: Vec<LocalBoxFuture<'static, Result<Option<(Bytes, FetchState)>, Error>>>,
     fetch_results: Vec<Result<Bytes, Error>>,
 }
 }
@@ -110,38 +109,37 @@ async fn fetch(
     let req = req.build()?;
 
     log::debug!("GET {}", url);
-    let mut resp = client.execute(req).await?.error_for_status().map_err(|e| {
+    let resp = client.execute(req).await?.error_for_status().map_err(|e| {
         log::debug!("{}: {}", e, url);
         e
     })?;
+
+    // Copy out the response headers, if any
+    let etag = resp
+        .headers()
+        .get(reqwest::header::ETAG)
+        .and_then(|v| v.to_str().ok())
+        .map(String::from);
+    let last_modified = resp
+        .headers()
+        .get(reqwest::header::LAST_MODIFIED)
+        .and_then(|v| v.to_str().ok())
+        .map(String::from);
+    let status = resp.status();
+
+    let body = resp.bytes().await?;
+
     if (fetch_state.etag.is_some() || fetch_state.last_modified.is_some())
-        && resp.status() == reqwest::StatusCode::NOT_MODIFIED
+        && status == reqwest::StatusCode::NOT_MODIFIED
     {
         log::debug!("304 Not Modified: {}", url);
-        // Sink the body, if any, to make the connection reusable
-        // (Discard errors)
-        while let Ok(Some(_)) = resp.chunk().await {}
-
         Ok(None)
     } else {
-        // Copy in the response headers, if any
-        let etag = resp
-            .headers()
-            .get(reqwest::header::ETAG)
-            .and_then(|v| v.to_str().ok())
-            .map(String::from);
-        let last_modified = resp
-            .headers()
-            .get(reqwest::header::LAST_MODIFIED)
-            .and_then(|v| v.to_str().ok())
-            .map(String::from);
-
         let new_fetch_state = FetchState {
             etag,
             last_modified,
         };
         log::debug!("200 OK {}", url);
-        let body = resp.bytes().await?;
 
         // Return the response
         Ok(Some((body, new_fetch_state)))

@@ -9,17 +9,36 @@ license = "MIT OR Apache-2.0"
 keywords = ["weather", "noaa", "emwin", "nwws"]
 categories = ["api-bindings", "science"]
 
+[lib]
+crate-type = ["cdylib", "rlib"]
+
 [dependencies]
 bytes = "1.1"
-zip = { version = "0.5", features = ["deflate"] }
+zip = { version = "0.5", features = ["deflate"], default_features = false }
 thiserror = "1.0"
-tokio = { version = "1.16", features = ["rt", "macros"] }
 futures = "0.3"
 reqwest = { version = "0.11" }
 log = "0.4"
 pin-project-lite = "0.2.8"
 
-[dev-dependencies]
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+tokio = { version = "1.16", features = ["rt", "macros"] }
+
+[[example]]
+name = "print"
+
+[target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
 env_logger = "0.9"
 tokio = { version = "1.16", features = ["full"] }
 tokio-test = "0.4"
+
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+js-sys = "0.3"
+web-sys = { version = "0.3", features = ["Window"] }
+wasm-bindgen = { version = "0.2", features = [] }
+wasm-bindgen-futures = "0.4"
+wasm-bindgen-test = "0.3"
+
+[profile.release]
+# Tell `rustc` to optimize for small code size.
+opt-level = "s"

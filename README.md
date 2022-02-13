@@ -16,8 +16,9 @@ crate therefore requires no setup.
 * `#![forbid(unsafe_code)]`
 * Pure Rust
 * Async (using [Tokio](https://tokio.rs))
+* WebAssembly support (using [wasm-pack](https://rustwasm.github.io/wasm-pack/))
 
-## Example
+## Rust Example
 
 ```rust
 let mut stream = emwin_tg::TextStream::new();
@@ -34,4 +35,10 @@ while let Some(event) = stream.next().await {
         },
     }
 }
+```
+
+## JavaScript example
+
+```javascript
+import EmwinTg;
 ```

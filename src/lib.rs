@@ -53,9 +53,18 @@ pub use stream::{ImageSource, ImageStream, Source, Stream, TextSource, TextStrea
 pub(crate) use fetch::*;
 pub(crate) use state::*;
 
+#[cfg(target_arch = "wasm32")]
+mod wasm;
+
+#[cfg(not(target_arch = "wasm32"))]
 pub(crate) fn default_client() -> reqwest::Client {
     reqwest::Client::builder()
         .user_agent("https://github.com/willglynn/emwin")
         .build()
         .expect("build client")
+}
+
+#[cfg(target_arch = "wasm32")]
+pub(crate) fn default_client() -> reqwest::Client {
+    reqwest::Client::default()
 }
