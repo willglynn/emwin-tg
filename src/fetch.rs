@@ -3,7 +3,6 @@ use crate::Error;
 use bytes::Bytes;
 use futures::future::BoxFuture;
 use pin_project_lite::pin_project;
-use std::future::Future;
 use std::marker::PhantomData;
 use std::pin::Pin;
 use std::task::{Context, Poll};
@@ -19,6 +18,8 @@ struct FetchState {
     last_modified: Option<String>,
 }
 
+type FetchResult = Result<Option<(Bytes, FetchState)>, Error>;
+
 pin_project! {
 pub struct FetchStream<F: Fetchable> {
     client: reqwest::Client,
@@ -26,7 +27,7 @@ pub struct FetchStream<F: Fetchable> {
     fetch_state: FetchState,
     #[pin]
     ticker: Ticker,
-    fetches: Vec<BoxFuture<'static, Result<Option<(Bytes, FetchState)>, Error>>>,
+    fetches: Vec<BoxFuture<'static, FetchResult>>,
     fetch_results: Vec<Result<Bytes, Error>>,
 }
 }

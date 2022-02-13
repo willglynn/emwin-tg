@@ -45,7 +45,7 @@ impl Stream for TextSource {
         if let Poll::Ready(value) = this.text3hour.poll_next(cx) {
             return Poll::Ready(value);
         }
-        return Poll::Pending;
+        Poll::Pending
     }
 }
 

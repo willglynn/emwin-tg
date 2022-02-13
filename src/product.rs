@@ -14,7 +14,7 @@ pub struct Product {
 impl Product {
     /// The expected MIME type of this product, if known.
     pub fn mime_type(&self) -> Option<&'static str> {
-        Some(match self.filename.rsplit(".").next().unwrap() {
+        Some(match self.filename.rsplit('.').next().unwrap() {
             ".TXT" => "text/plain",
             ".GIF" => "image/gif",
             ".JPG" => "image/jpeg",
@@ -47,7 +47,7 @@ impl Product {
 
         let mut contents = vec![0u8; file.size().clamp(0, 8 << 20) as usize];
         file.read_exact(&mut contents)
-            .map_err(|e| zip::result::ZipError::Io(e))?;
+            .map_err(zip::result::ZipError::Io)?;
 
         let filename = file.name().to_uppercase();
 
@@ -55,9 +55,10 @@ impl Product {
             // Recurse
             let mut archive = zip::ZipArchive::new(std::io::Cursor::new(&contents))?;
             if archive.len() != 1 {
-                Err(Error::ArchiveMember(filename))?;
+                Err(Error::ArchiveMember(filename))
+            } else {
+                Product::new(archive.by_index(0))
             }
-            Product::new(archive.by_index(0))
         } else {
             Ok(Product { filename, contents })
         }

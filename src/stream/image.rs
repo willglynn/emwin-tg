@@ -35,7 +35,7 @@ impl Stream for ImageSource {
         if let Poll::Ready(value) = this.image3hour.poll_next(cx) {
             return Poll::Ready(value);
         }
-        return Poll::Pending;
+        Poll::Pending
     }
 }
 
