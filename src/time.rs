@@ -1,7 +1,6 @@
 use std::pin::Pin;
 use std::task::{Context, Poll};
 
-#[cfg(not(target_arch = "wasm32"))]
 #[derive(Debug)]
 pub struct Ticker(tokio::time::Interval);
 
@@ -20,6 +19,3 @@ impl futures::Stream for Ticker {
         self.0.poll_tick(cx).map(|_| Some(()))
     }
 }
-
-#[cfg(target_arch = "wasm32")]
-pub struct Ticker;
